@@ -1,0 +1,158 @@
+<!doctype html><html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>SDV Architecture</title>
+<style>
+html,body{margin:0;height:100%;background:#000;overflow:hidden;font-family:"Apple SD Gothic Neo","Helvetica Neue",sans-serif}
+body{display:flex;align-items:center;justify-content:center}
+canvas{display:block;width:min(100vw,calc(100vh*16/9));height:auto;aspect-ratio:16/9;cursor:pointer}
+#ui{display:none;position:fixed;left:0;right:0;bottom:0;padding:14px 20px 18px;gap:14px;align-items:center;background:linear-gradient(transparent,rgba(0,0,0,.75));transition:opacity .3s;color:#f2f5f8;font-size:14px}
+#ui.hide{opacity:0}
+#ui button{background:none;border:0;color:#f2f5f8;font-size:18px;cursor:pointer;width:32px;padding:0}
+#bar{flex:1;height:6px;background:rgba(255,255,255,.2);border-radius:3px;cursor:pointer;position:relative;touch-action:none}
+#bar:hover{height:8px}
+#fill{height:100%;width:0;background:#e82127;border-radius:3px}
+#tm{font-variant-numeric:tabular-nums;min-width:86px;text-align:right;opacity:.85}
+</style></head><body>
+<canvas id="c" width="1920" height="1080"></canvas>
+<div id="ui"><button id="pb" title="재생/일시정지 (Space)">❚❚</button><div id="bar"><div id="fill"></div></div><span id="tm">0:00 / 0:30</span><button id="fs" title="전체화면 (F)">⛶</button></div>
+<script>
+const c=document.getElementById('c'),x=c.getContext('2d');const W=1920,H=1080;
+const F='"Apple SD Gothic Neo","Helvetica Neue",sans-serif';
+const cl=(v,a=0,b=1)=>Math.max(a,Math.min(b,v));
+const eo=t=>1-Math.pow(1-cl(t),3), eio=t=>{t=cl(t);return t<.5?4*t*t*t:1-Math.pow(-2*t+2,3)/2};
+const back=t=>{t=cl(t);const s=1.7;return 1+(s+1)*Math.pow(t-1,3)+s*Math.pow(t-1,2)};
+const RED='#e82127',CY='#3ee0ff',WH='#f2f5f8',GR='#7a8696';
+const LAYERS=[
+ {n:'01',t:'HARDWARE & SENSORS',k:'센서 · 액추에이터',d:['카메라 8대 · 360° 비전','HW4 FSD 컴퓨터','BMS · 드라이브 유닛'],col:'#ff5a5f'},
+ {n:'02',t:'ZONAL E/E ARCHITECTURE',k:'존 컨트롤러',d:['전방 · 좌측 · 우측 바디 컨트롤러','배선 대폭 축소','이더넷 + CAN 백본'],col:'#ffb547'},
+ {n:'03',t:'CENTRAL COMPUTE',k:'중앙 집중 컴퓨팅',d:['FSD 칩 ×2 (자율주행)','MCU · AMD Ryzen (인포테인먼트)','도메인 통합'],col:'#ffe066'},
+ {n:'04',t:'OS & MIDDLEWARE',k:'운영체제 · 미들웨어',d:['Linux 기반 차량 OS','RTOS · 하이퍼바이저','SOA 서비스 버스'],col:'#4cd97b'},
+ {n:'05',t:'APPLICATIONS',k:'애플리케이션',d:['Autopilot · FSD','센트리 모드 · 공조 · UI','게임 · 스트리밍'],col:'#3ee0ff'},
+ {n:'06',t:'CLOUD & OTA',k:'클라우드 · 무선 업데이트',d:['LTE / Wi-Fi 커넥티비티','플릿 데이터 → 학습','OTA 업데이트 배포'],col:'#8f7bff'},
+];
+const L0=7.0,LD=2.9; // layer section start & duration
+function txt(s,px,py,size,col,wt=800,al='left',ls=0){x.font=`${wt} ${size}px ${F}`;x.fillStyle=col;x.textAlign=al;x.textBaseline='alphabetic';if(ls){x.letterSpacing=ls+'px'}else x.letterSpacing='0px';x.fillText(s,px,py)}
+// kinetic: characters fly in
+function kin(s,px,py,size,col,t,wt=900,stag=.035,al='left'){x.font=`${wt} ${size}px ${F}`;let tw=x.measureText(s).width;let sx=al==='center'?px-tw/2:px;let cx=sx;
+ for(let i=0;i<s.length;i++){const ch=s[i],w=x.measureText(ch).width;const p=eo((t-i*stag)/.45);if(p>0){x.save();x.globalAlpha=p;x.translate(cx+w/2,py+(1-p)*size*.9);x.rotate((1-p)*.35);x.scale(1,.4+.6*back((t-i*stag)/.45));x.fillStyle=col;x.textAlign='center';x.fillText(ch,0,0);x.restore()}cx+=w}}
+function grid(t){x.strokeStyle='rgba(62,224,255,0.06)';x.lineWidth=1;const o=(t*30)%60;for(let i=-60;i<W+60;i+=60){x.beginPath();x.moveTo(i+o,0);x.lineTo(i+o,H);x.stroke()}for(let j=0;j<H;j+=60){x.beginPath();x.moveTo(0,j);x.lineTo(W,j);x.stroke()}}
+// top-down car path (Model 3-like), centred at origin, length 760 width 330
+function carPath(){x.beginPath();x.moveTo(-380,-120);x.bezierCurveTo(-395,-40,-395,40,-380,120);x.bezierCurveTo(-370,160,-330,168,-260,168);x.lineTo(250,168);x.bezierCurveTo(340,168,375,150,385,100);x.bezierCurveTo(395,40,395,-40,385,-100);x.bezierCurveTo(375,-150,340,-168,250,-168);x.lineTo(-260,-168);x.bezierCurveTo(-330,-168,-370,-160,-380,-120);x.closePath()}
+function car(cx,cy,s,draw,glow){x.save();x.translate(cx,cy);x.scale(s,s);
+ // wheels
+ x.fillStyle='#11161d';[[-250,-180],[-250,152],[230,-180],[230,152]].forEach(([a,b])=>{x.globalAlpha=cl(draw*2-1);x.beginPath();x.roundRect(a-50,b,100,28,8);x.fill()});x.globalAlpha=1;
+ carPath();x.fillStyle=`rgba(20,26,36,${.9*cl(draw*1.5-.5)})`;x.fill();
+ x.setLineDash([3000]);x.lineDashOffset=3000*(1-eio(draw));x.strokeStyle=WH;x.lineWidth=3;x.shadowColor=CY;x.shadowBlur=glow*20;x.stroke();x.shadowBlur=0;x.setLineDash([]);
+ const a=cl(draw*2-1);x.globalAlpha=a;
+ // glass roof
+ x.beginPath();x.moveTo(-170,-125);x.bezierCurveTo(-60,-140,120,-140,190,-120);x.bezierCurveTo(215,-60,215,60,190,120);x.bezierCurveTo(120,140,-60,140,-170,125);x.bezierCurveTo(-190,60,-190,-60,-170,-125);x.fillStyle='rgba(62,224,255,0.10)';x.fill();x.strokeStyle='rgba(242,245,248,.5)';x.lineWidth=2;x.stroke();
+ // hood/trunk lines
+ x.strokeStyle='rgba(242,245,248,.25)';x.beginPath();x.moveTo(240,-140);x.quadraticCurveTo(280,0,240,140);x.moveTo(-250,-140);x.quadraticCurveTo(-285,0,-250,140);x.stroke();
+ // mirrors
+ x.fillStyle='rgba(242,245,248,.5)';x.fillRect(150,-188,30,20);x.fillRect(150,168,30,20);
+ x.globalAlpha=1;x.restore()}
+// component positions in car-local coords (front = +x)
+const P={camF:[215,0],camL:[60,-170],camR:[60,170],camRL:[150,-165],camRR:[150,165],camB:[-380,0],camP1:[180,-120],camP2:[180,120],
+ fsd:[150,0],mcu:[110,40],bms:[-40,0],motR:[-300,0],motF:[300,0],zF:[300,-60],zL:[-60,-140],zR:[-60,140],ant:[-150,0]};
+function W2(cx,cy,s,p){return[cx+p[0]*s,cy+p[1]*s]}
+function node(px,py,r,col,lbl,a,sz=22){if(a<=0)return;x.save();x.globalAlpha=cl(a);x.shadowColor=col;x.shadowBlur=24;x.fillStyle=col;x.beginPath();x.arc(px,py,r*eo(a*1.2),0,7);x.fill();x.shadowBlur=0;x.strokeStyle=col;x.lineWidth=2;x.beginPath();x.arc(px,py,r*1.9*eo(a),0,7);x.globalAlpha=cl(a)*.5;x.stroke();x.globalAlpha=cl(a);if(lbl)txt(lbl,px+r+14,py+8,sz,WH,700);x.restore()}
+function rect(px,py,w,h,col,lbl,a,sub){if(a<=0)return;x.save();x.globalAlpha=cl(a);const s=back(a);x.translate(px,py);x.scale(s,s);x.fillStyle=col+'33';x.strokeStyle=col;x.lineWidth=2.5;x.shadowColor=col;x.shadowBlur=18;x.beginPath();x.roundRect(-w/2,-h/2,w,h,8);x.fill();x.stroke();x.shadowBlur=0;txt(lbl,0,sub?-2:8,20,WH,800,'center');if(sub)txt(sub,0,22,15,col,700,'center');x.restore()}
+function line(a,b,col,p,w=3,dash){if(p<=0)return;x.save();x.strokeStyle=col;x.lineWidth=w;x.shadowColor=col;x.shadowBlur=10;if(dash){x.setLineDash([10,8])}x.beginPath();x.moveTo(a[0],a[1]);const e=eio(p);const mx=a[0],my=b[1];// L path
+ const l1=Math.abs(b[1]-a[1]),l2=Math.abs(b[0]-a[0]),tot=l1+l2,d=e*tot;if(d<=l1){x.lineTo(a[0],a[1]+Math.sign(b[1]-a[1])*d)}else{x.lineTo(mx,my);x.lineTo(a[0]+Math.sign(b[0]-a[0])*(d-l1),my)}x.stroke();x.restore()}
+function pulse(a,b,col,t){const l1=Math.abs(b[1]-a[1]),l2=Math.abs(b[0]-a[0]),tot=l1+l2;if(!tot)return;const d=((t%1)+1)%1*tot;let p;if(d<=l1)p=[a[0],a[1]+Math.sign(b[1]-a[1])*d];else p=[a[0]+Math.sign(b[0]-a[0])*(d-l1),b[1]];x.save();x.fillStyle='#fff';x.shadowColor=col;x.shadowBlur=20;x.beginPath();x.arc(p[0],p[1],5,0,7);x.fill();x.restore()}
+function camFov(px,py,ang,col,a,len=260,spread=.5){if(a<=0)return;x.save();const g=x.createRadialGradient(px,py,0,px,py,len*eo(a));g.addColorStop(0,col+'66');g.addColorStop(1,col+'00');x.fillStyle=g;x.beginPath();x.moveTo(px,py);x.arc(px,py,len*eo(a),ang-spread,ang+spread);x.closePath();x.fill();x.restore()}
+
+function layerPanel(t){ // right side stack
+ const bx=1180,by=170,bw=640,bh=108,gap=14;
+ for(let i=0;i<6;i++){const L=LAYERS[5-i];const li=5-i;const st=L0+li*LD;const a=eo((t-st)/.5);if(a<=0)continue;const active=t>=st&&t<st+LD&&t<25;const y=by+i*(bh+gap);
+  x.save();x.globalAlpha=a;x.translate((1-a)*200,0);
+  x.fillStyle=active?L.col+'26':'rgba(255,255,255,0.035)';x.strokeStyle=active?L.col:'rgba(255,255,255,.14)';x.lineWidth=active?3:1.5;x.beginPath();x.roundRect(bx,y,bw,bh,10);x.fill();x.stroke();
+  x.fillStyle=L.col;x.fillRect(bx,y,8,bh);
+  txt(L.n,bx+34,y+66,40,active?L.col:GR,900);txt(L.t,bx+120,y+48,26,WH,800,'left',1);txt(L.k,bx+120,y+84,22,active?L.col:GR,600);
+  x.restore()}
+}
+function detailText(t){for(let i=0;i<6;i++){const L=LAYERS[i],st=L0+i*LD,lt=t-st;if(lt<0||lt>LD||t>25)continue;const out=cl((lt-(LD-.35))/.35);x.save();x.globalAlpha=1-out;x.translate(0,-out*40);
+  txt('LAYER '+L.n+' / 06',100,150,22,L.col,800,'left',6);
+  kin(L.t,100,225,64,WH,lt*1.4,900,.025);
+  L.d.forEach((d,j)=>{const p=eo((lt-.5-j*.18)/.4);if(p<=0)return;x.save();x.globalAlpha=p*(1-out);x.translate((1-p)*-60,0);x.fillStyle=L.col;x.fillRect(100,890+j*52-18,22,4);txt(d,140,890+j*52,30,WH,700);x.restore()});
+  x.restore()}}
+
+function render(t){x.clearRect(0,0,W,H);x.fillStyle='#05070b';x.fillRect(0,0,W,H);
+ const vg=x.createRadialGradient(W*.32,H*.55,50,W*.32,H*.55,900);vg.addColorStop(0,'#0e1724');vg.addColorStop(1,'#05070b');x.fillStyle=vg;x.fillRect(0,0,W,H);grid(t);
+ // ---------- INTRO 0-3.2 ----------
+ if(t<3.4){const o=cl((t-2.8)/.6);x.save();x.globalAlpha=1-o;x.translate(0,-o*80);
+  kin('SOFTWARE',W/2,380,170,WH,t*1.3,900,.05,'center');
+  kin('DEFINED',W/2,560,170,RED,t*1.3-.35,900,.05,'center');
+  kin('VEHICLE',W/2,740,170,WH,t*1.3-.7,900,.05,'center');
+  const p=eo((t-1.3)/.6);x.globalAlpha=(1-o)*p;txt('소프트웨어가 정의하는 자동차 — 테슬라 아키텍처 기준',W/2,840,36,CY,700,'center');
+  x.fillStyle=RED;x.fillRect(W/2-300*p,870,600*p,4);x.restore()}
+ // ---------- CAR STAGE 3-25 ----------
+ if(t>=2.9&&t<26.5){const cx=560,cy=560,s=1.05;const dr=cl((t-3)/1.6);const fade=1-cl((t-25.2)/.8);x.save();x.globalAlpha=fade;
+  // car intro caption
+  if(t<7.2){const lt=t-3.1,o=cl((t-6.6)/.5);x.save();x.globalAlpha=fade*(1-o);txt('TESLA MODEL 3 · TOP VIEW',100,150,22,RED,800,'left',6);kin('하드웨어는 그대로,',100,225,64,WH,lt*1.3,900,.04);kin('차는 매일 새로워진다',100,300,64,CY,lt*1.3-.6,900,.04);x.restore()}
+  car(cx,cy,s,dr,cl((t-4.5)))
+  const Wp=k=>W2(cx,cy,s,P[k]);
+  const li=Math.floor((t-L0)/LD),lt=t-L0-li*LD;const cur=t>=L0?Math.min(li,5):-1;
+  // persistent elements accumulate; active layer brighter
+  const A=(i,d=0)=>t<L0+i*LD?0:cl((t-L0-i*LD-d)/.4)*(cur===i?1:.45);
+  // 01 sensors
+  if(cur>=0){const a=A(0);const cams=[['camF',0],['camP1',-.6],['camP2',.6],['camL',-1.8],['camR',1.8],['camRL',-2.4],['camRR',2.4],['camB',Math.PI]];
+   cams.forEach(([k,ang],i)=>{const aa=A(0,.1+i*.06);const p=Wp(k);camFov(p[0],p[1],ang,'#ff5a5f',aa*(cur===0?1:.4),cur===0?300:200);node(p[0],p[1],7,'#ff5a5f','',aa)});
+   const sw=cur===0?1:0;rect(...Wp('bms'),220,64,'#ff5a5f','BATTERY · BMS',A(0,.6),'4680 / 2170 Cells');rect(...Wp('motR'),110,54,'#ff5a5f','REAR DU',A(0,.75));
+   if(cur===0){x.save();x.globalAlpha=cl(lt*2);txt('8 CAMERAS',cx+420,cy-230,22,'#ff5a5f',800);x.restore()}}
+  // 02 zonal
+  if(cur>=1){const zc='#ffb547';const z=['zF','zL','zR'],nm=['FRONT BC','LEFT BC','RIGHT BC'];const cen=Wp('fsd');
+   z.forEach((k,i)=>{const p=Wp(k);line(p,cen,zc,(t-L0-LD-.2-i*.12)/.6,cur===1?4:2);});
+   z.forEach((k,i)=>{const p=Wp(k);rect(p[0],p[1],150,50,zc,nm[i],A(1,i*.12))});
+   if(cur===1)z.forEach((k,i)=>pulse(Wp(k),cen,zc,t*.9+i*.33));}
+  // 03 central compute
+  if(cur>=2){const cc='#ffe066';rect(...Wp('fsd'),190,90,cc,'FSD COMPUTER',A(2),'HW4 · 2× SoC');const m=Wp('mcu');rect(m[0]+0,m[1]+95,170,56,cc,'MCU · RYZEN',A(2,.2));
+   if(cur===2){x.save();const r=60+((t*120)%140);x.globalAlpha=1-(r-60)/140;x.strokeStyle=cc;x.lineWidth=3;const p=Wp('fsd');x.beginPath();x.arc(p[0],p[1],r,0,7);x.stroke();x.restore();
+    ['camF','camL','camR','camB'].forEach((k,i)=>{line(Wp(k),Wp('fsd'),cc,(lt-.3)/.6,2,true);pulse(Wp(k),Wp('fsd'),cc,t*1.2+i*.25)})}}
+  // 04 OS - stacked strata over compute
+  if(cur>=3){const oc='#4cd97b';const p=Wp('fsd');const labels=['HYPERVISOR','LINUX · RTOS','SOA MIDDLEWARE'];
+   labels.forEach((l,i)=>{const a=A(3,i*.15);if(a<=0)return;x.save();x.globalAlpha=cl(a);const y=p[1]-90-i*48*eo(a);x.fillStyle=oc+'22';x.strokeStyle=oc;x.lineWidth=2;x.beginPath();x.roundRect(p[0]-130,y-20,260,40,6);x.fill();x.stroke();txt(l,p[0],y+8,18,WH,800,'center',2);x.restore()})}
+  // 05 apps - orbiting icons
+  if(cur>=4){const ac='#3ee0ff';const apps=['AUTOPILOT','SENTRY','CLIMATE','MEDIA','NAV','CHARGE'];const p=[cx+30,cy];
+   apps.forEach((ap,i)=>{const a=A(4,i*.08);if(a<=0)return;const ang=i/apps.length*Math.PI*2+t*.25;const R=(cur===4?470:430)*eo(a);const q=[p[0]+Math.cos(ang)*R,p[1]+Math.sin(ang)*R*.62];
+    x.save();x.globalAlpha=cl(a)*.5;x.strokeStyle=ac;x.setLineDash([4,6]);x.beginPath();x.moveTo(p[0],p[1]);x.lineTo(q[0],q[1]);x.stroke();x.restore();
+    x.save();x.globalAlpha=cl(a);x.fillStyle='#0b1622';x.strokeStyle=ac;x.lineWidth=2;x.shadowColor=ac;x.shadowBlur=16;x.beginPath();x.roundRect(q[0]-70,q[1]-24,140,48,24);x.fill();x.stroke();x.shadowBlur=0;txt(ap,q[0],q[1]+7,17,WH,800,'center',1);x.restore()})}
+  // 06 cloud / OTA
+  if(cur>=5){const oc='#8f7bff';const a=A(5);const cl0=[cx+30,140];const ant=Wp('ant');
+   x.save();x.globalAlpha=cl(a);x.fillStyle=oc+'33';x.strokeStyle=oc;x.lineWidth=3;x.shadowColor=oc;x.shadowBlur=25;x.beginPath();x.arc(cl0[0]-50,cl0[1]+10,40,0,7);x.arc(cl0[0],cl0[1]-12,52,0,7);x.arc(cl0[0]+55,cl0[1]+10,38,0,7);x.fill();x.restore();
+   x.save();x.globalAlpha=cl(a);txt('FLEET CLOUD',cl0[0]+120,cl0[1]+8,22,WH,800);x.restore();
+   for(let k=0;k<4;k++){const ph=((t*.8+k*.25)%1);const y=cl0[1]+60+ph*(ant[1]-cl0[1]-60);x.save();x.globalAlpha=cl(a)*(1-ph)*.9;x.strokeStyle=oc;x.lineWidth=3;x.beginPath();x.arc(cl0[0],y,20+ph*60,Math.PI*.2,Math.PI*.8);x.stroke();x.restore()}
+   if(cur===5){const pr=cl((lt-.5)/1.8);x.save();x.globalAlpha=cl(a);const ox=cl0[0]+120,oy=cl0[1]+50;x.fillStyle='rgba(255,255,255,.1)';x.fillRect(ox,oy,340,10);x.fillStyle=oc;x.fillRect(ox,oy,340*pr,10);txt('OTA UPDATE  v2026.44  '+Math.round(pr*100)+'%',ox,oy-12,18,WH,800);x.restore()}}
+  x.restore();
+  if(t>=L0-.3){x.save();x.globalAlpha=fade;layerPanel(t);detailText(t);x.restore()}
+ }
+ // ---------- OUTRO 25-30 ----------
+ if(t>=25.3){const lt=t-25.3;
+  // stacked bars
+  for(let i=0;i<6;i++){const L=LAYERS[5-i];const p=eo((lt-i*.08)/.5);const y=250+i*70;x.save();x.globalAlpha=p;x.fillStyle=L.col;const w=(760)*p;x.fillRect(W/2-w/2,y,w,54);txt(L.t,W/2,y+36,24,'#05070b',900,'center',3);x.restore()}
+  kin('CODE IS THE NEW',W/2,760,72,WH,lt*1.2-.6,900,.03,'center');
+  kin('HORSEPOWER',W/2,870,110,RED,lt*1.2-1.1,900,.05,'center');
+  const p=eo((lt-2.2)/.6);x.save();x.globalAlpha=p;txt('SDV · 하드웨어 위에 계층화된 소프트웨어, 무선으로 진화한다',W/2,950,30,CY,700,'center');x.restore();
+  const fo=cl((t-29.4)/.6);if(fo>0){x.fillStyle=`rgba(5,7,11,${fo})`;x.fillRect(0,0,W,H)}}
+ // global frame chrome
+ x.save();x.globalAlpha=.6;txt('SDV ARCHITECTURE',60,1040,16,GR,800,'left',4);txt(String(t.toFixed(1)).padStart(4,'0')+'s',W-60,1040,16,GR,800,'right',2);x.restore();
+}
+window.render=render;
+// ---------- player ----------
+if(!navigator.webdriver){
+ const DUR=30,ui=document.getElementById('ui'),pb=document.getElementById('pb'),bar=document.getElementById('bar'),fill=document.getElementById('fill'),tm=document.getElementById('tm'),fs=document.getElementById('fs');
+ ui.style.display='flex';
+ let cur=0,playing=true,last=performance.now(),hideT;
+ const fmt=s=>'0:'+String(Math.floor(s)).padStart(2,'0');
+ const setPlay=p=>{playing=p;pb.textContent=p?'❚❚':'▶';last=performance.now()};
+ (function loop(now){if(playing){cur+=(now-last)/1000;if(cur>=DUR)cur-=DUR}last=now;render(cur);fill.style.width=(cur/DUR*100)+'%';tm.textContent=fmt(cur)+' / 0:30';requestAnimationFrame(loop)})(performance.now());
+ pb.onclick=()=>setPlay(!playing);
+ c.onclick=()=>setPlay(!playing);
+ const seek=e=>{const r=bar.getBoundingClientRect();cur=Math.min(DUR-.001,Math.max(0,(e.clientX-r.left)/r.width*DUR))};
+ let drag=false;bar.onpointerdown=e=>{drag=true;bar.setPointerCapture(e.pointerId);seek(e)};bar.onpointermove=e=>{if(drag)seek(e)};bar.onpointerup=()=>drag=false;
+ const full=()=>document.fullscreenElement?document.exitFullscreen():document.documentElement.requestFullscreen();
+ fs.onclick=full;
+ addEventListener('keydown',e=>{if(e.code==='Space'){e.preventDefault();setPlay(!playing)}else if(e.key==='f'||e.key==='F')full();else if(e.key==='ArrowRight')cur=Math.min(DUR-.001,cur+3);else if(e.key==='ArrowLeft')cur=Math.max(0,cur-3);else if(e.key==='Home')cur=0;wake()});
+ const wake=()=>{ui.classList.remove('hide');document.body.style.cursor='';clearTimeout(hideT);hideT=setTimeout(()=>{ui.classList.add('hide');document.body.style.cursor='none'},2200)};
+ addEventListener('pointermove',wake);wake();
+}
+</script></body></html>
