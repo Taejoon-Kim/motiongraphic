@@ -4,6 +4,7 @@
 
 ## 재생
 
+- **웹에서 보기**: https://taejoon-kim.github.io/motiongraphic/
 - **HTML**: `sdv.html`을 브라우저로 열면 바로 반복 재생됩니다. 외부 의존성이 없는 단일 파일입니다.
   - `Space` 또는 화면 클릭: 재생/일시정지
   - `←` / `→`: 3초 뒤로/앞으로 이동
